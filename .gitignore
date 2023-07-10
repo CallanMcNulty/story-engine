@@ -1,5 +1,5 @@
 .DS_Store
 node_modules
 raw
-cards
-!cards/demo
+cards/*
+!cards/demo-core
