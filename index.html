@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta http-equiv="X-UA-Compatible" content="IE=edge">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Story Engine</title>
+	<script src="https://kit.fontawesome.com/0422dde105.js" crossorigin="anonymous"></script>
+	<script>module = { exports:{} }</script>
+	<style>
+		* {
+			box-sizing: border-box;
+			font-family: Candara, Segoe, Segoe UI, Optima, Arial, sans-serif;
+		}
+		.control {
+			margin: .5em;
+			cursor: pointer;
+			color: white;
+			font-size: 2em;
+		}
+		.tuck-trigger:hover {
+			opacity: 0.5!important;
+		}
+		.deck-toggle:hover {
+			background-color:rgba(0,0,0,.25);
+		}
+	</style>
+</head>
+<body style="margin:0; position:relative;">
+	<div id="mat" style="
+		position:relative; width:100vw; height:100vh; overflow:auto; user-select:none;
+		background-color:#506a7f; box-shadow:inset 0 0 50vmin black;
+	">
+		<div id="right-bound" style="position:absolute; width:1px; height:1px;"></div>
+		<div id="bottom-bound" style="position:absolute; width:1px; height:1px;"></div>
+	</div>
+	<div id="decks" style="position:fixed; top:0; width:100%; height:0; display:flex; justify-content:center;"></div>
+	<div id="controls" style="
+		position:fixed; top:0; left:-5em; width:0; height:100%; transition:left .1s;
+		display:flex; justify-content:center; flex-direction:column;
+	">
+		<i class="fas fa-undo-alt control" onclick="rotateSelected(-1)"></i>
+		<i class="fas fa-redo-alt control" onclick="rotateSelected(1)"></i>
+		<i class="fas fa-sync-alt control" onclick="flipSelected()"></i>
+		<i id="tuck-icon" class="fas fa-clone control" onclick="toggleTuck()"></i>
+		<i id="untuck-icon" class="far fa-window-close control" onclick="untuck()"></i>
+		<i class="fas fa-stamp control" onclick="copySelected()"></i>
+		<i class="fas fa-eraser control" onclick="remove()"></i>
+		<i class="fas fa-times-circle control" onclick="deselect()"></i>
+	</div>
+	<div id="deck-selector" style="
+		display:flex; flex-direction:column; height:100%; width:25em; max-width:100%;
+		position:absolute; left:-25em; top:0; transition:left .2s;
+		background-color:#273a34; color:white; box-shadow:0 0 1em black;
+	">
+		<div style="font-size:1.5em; padding:.75em; padding-left:3em;">Select sets</div>
+		<div style="overflow-y:auto;"></div>
+	</div>
+	<i class="fas fa-layer-group control" style="top:0; position:absolute;" onclick="toggleDeckSelector()"></i>
+	<i class="fas fa-trash-alt control" style="top:0; right:0; position:absolute;" onclick="clearAll()"></i>
+<script src="decks.js"></script>
+<script>
+	function inflate(html) {
+		const template = document.createElement('template');
+		html = html.trim();
+		template.innerHTML = html;
+		return template.content.firstChild;
+	}
+
+	function addUICard(card, topLevel=true) {
+		let el = inflate(`
+			<div style="position:relative; display:inline-block;">
+				<div class="${getCardId(card)}${topLevel ? ' top-level' : ''}" style="
+					display:inline-flex; position:relative;
+					width:8em; height:8em;
+					border-radius:.4em; overflow:hidden;
+					justify-content:center; align-items:center;
+					box-shadow:0 0 1em black;
+				">
+					<img style="position:absolute; width:110%;" ondragstart="return false;"/>
+					<div class="selected-border" style="
+						position:absolute; top:0; width:100%; height:100%;
+						border:.17em dashed white; border-radius:.4em;
+					"></div>
+				</div>
+			</div>
+		`);
+		updateCardElement(el.children[0], card);
+		return el;
+	}
+
+	function updateCardElement(el, card) {
+		let tucked = (card.parent?.tucked ?? []).find(t => t.card == card);
+		let img = el.children[0];
+		img.src = getCardPath(card);
+		let effectiveOrientation = card.orientation + (tucked?.side ?? 0);
+		img.style.transform = effectiveOrientation ? `rotate(${90 * effectiveOrientation}deg)` : '';
+		el.children[1].style.display = card == selectedCard ? 'block' : 'none';
+		let parent = el.parentNode;
+		while(parent.children.length > 1) {
+			parent.removeChild(parent.children[0]);
+		}
+		for(let tucked of card.tucked) {
+			let childEl = addUICard(tucked.card, false);
+			let cardEl = childEl.children[childEl.children.length-1];
+			if(tucked.card.deck == 'backstory') {
+				cardEl.style.transform = 'rotate(45deg)';
+			}
+			addSelectListener(cardEl, tucked.card);
+			parent.prepend(childEl);
+			childEl.style.position = 'absolute';
+			childEl.style[['top', 'right', 'bottom', 'left'][tucked.side]] = card.deck == 'backstory' ? '4em' : '2.5em';
+		}
+	}
+
+	function updateUICard(card) {
+		let elements = document.getElementsByClassName(getCardId(card));
+		for(let el of elements) {
+			updateCardElement(el, card);
+		}
+	}
+
+	function updateDrawPilesUI() {
+		let pilesEl = document.getElementById('decks');
+		pilesEl.innerHTML = '';
+		let lastCards = [];
+		for(let type in drawPiles) {
+			let cards = drawPiles[type];
+			if(cards.length) {
+				lastCards.push(cards[cards.length-1]);
+			}
+		}
+		for(let card of lastCards) {
+			let el = addUICard(card);
+			pilesEl.appendChild(el);
+			el.style.margin = '.5em';
+			el.addEventListener('click', event => {
+				let drawn = drawPiles[card.type].pop();
+				drawn.faceDown = false;
+				inPlay.push(drawn);
+				let pileRect = el.children[0].getBoundingClientRect();
+				addCardToPlayArea(drawn, pileRect.left, pileRect.bottom + 16);
+				selectCard(drawn);
+				updateDrawPilesUI();
+			});
+		}
+	}
+
+	function updateDeckSelector() {
+		for(let deck of decks) {
+			let link = document.getElementById(`${deck.id}-toggle`);
+			link.style.backgroundColor = deck.selected ? 'rgba(0,0,0,.5)' : '';
+			link.children[link.children.length - 1].style.display = deck.selected ? 'inline' : 'none';
+		} 
+	}
+
+	function getElementsForCard(card) {
+		return Array.from(document.getElementsByClassName(getCardId(card)));
+	}
+
+	function getDeckById(id) {
+		return decks.find(d => d.id == id);
+	}
+
+	function getTypeForDeck(deck, type) {
+		return deck.types.find(t => t.cardType == type);
+	}
+
+	function getCardPath(card) {
+		let deck = getDeckById(card.deck);
+		let type = card.type.split('_').pop();
+		return `cards/${card.deck}-${deck.deckType}/${type}/${card.faceDown ? 0 : card.number}.png`;
+	}
+
+	function getCardId(card) {
+		let type = card.type.split('_').pop();
+		return `${card.deck}_${type}_${card.number}`;
+	}
+
+	function syncSelectedDecks() {
+		for(let deck of decks) {
+			for(let type in drawPiles) {
+				if(deck.selected) {
+					drawPiles[type] = [...drawPiles[type], ...(deck.cards[type] ?? [])];
+					deck.cards[type] = [];
+				} else {
+					let toKeep = [];
+					let toReturn = [];
+					for(let card of drawPiles[type]) {
+						(card.deck == deck.id ? toReturn : toKeep).push(card);
+					}
+					drawPiles[type] = toKeep;
+					deck.cards[type] = [...(deck.cards[type] ?? []), ...toReturn];
+				}
+			}
+		}
+		for(let type in drawPiles) {
+			shuffle(drawPiles[type]);
+		}
+		updateDrawPilesUI();
+	}
+
+	function shuffle(cards) {
+		cards.splice(0, cards.length, ...cards.map(c => ({card:c, num:Math.random()})).sort((a,b) => a.num - b.num).map(c => c.card));
+	}
+
+	function addCardToPlayArea(card, initialX, initialY) {
+		let el = addUICard(card);
+		let mat = document.getElementById('mat');
+		mat.appendChild(el);
+		el.classList.add('card');
+		el.style.position = 'absolute';
+		el.style.left = initialX+mat.scrollLeft+'px';
+		el.style.top = initialY+mat.scrollTop+'px';
+		if(card.deck == 'backstory') {
+			el.children[el.children.length-1].style.transform = 'rotate(45deg)';
+		}
+		el.addEventListener('mousedown', event => {
+			elementToDrag = el;
+			elementToDrag.parentNode.appendChild(elementToDrag);
+			let rect = elementToDrag.getBoundingClientRect();
+			dragOffsetX = event.clientX - rect.left;
+			dragOffsetY = event.clientY - rect.top;
+			cardElements = document.getElementsByClassName('card');
+		});
+		addSelectListener(el.children[el.children.length-1], card);
+	}
+
+	function removeCardFromPlayArea(initialCard) {
+		let toRemove = [ initialCard ];
+		for(let card of inPlay) {
+			let parent = card.parent;
+			while(parent) {
+				if(parent == initialCard) {
+					toRemove.push(card);
+				}
+				parent = parent.parent;
+			}
+		}
+		inPlay = inPlay.filter(c => !toRemove.includes(c));
+		for(card of toRemove) {
+			card.tucked = [];
+			if(card.parent) {
+				card.parent.tucked = card.parent.tucked.filter(t => t.card != card)
+			}
+			card.parent = null;
+			card.faceDown = true;
+			card.orientation = 0;
+			let deck = getDeckById(card.deck);
+			if(deck.selected) {
+				drawPiles[card.type].unshift(card);
+			} else {
+				deck.cards[card.type].unshift(card);
+			}
+		}
+		updateDrawPilesUI();
+	}
+
+	function toggleDeckSelector() {
+		let el = document.getElementById('deck-selector');
+		deckSelectorHidden = !deckSelectorHidden;
+		el.style.left = deckSelectorHidden ? '-25em' : 0;
+	}
+
+	function clearAll() {
+		for(let card of inPlay) {
+			removeCardFromPlayArea(card);
+		}
+		let mat = document.getElementById('mat');
+		let contents = Array.from(mat.children);
+		for(let i=2; i<contents.length; i++) {
+			mat.removeChild(contents[i]);
+		}
+		deselect();
+		updateDrawPilesUI();
+	}
+
+	function addSelectListener(cardEl, card) {
+		cardEl.addEventListener('mousedown', event => {
+			if(!tucking) {
+				selectCard(card);
+			}
+		});
+	}
+
+	function selectCard(card) {
+		let previouslySelected = selectedCard;
+		selectedCard = card;
+		updateUICard(selectedCard);
+		if(previouslySelected && selectedCard != previouslySelected) {
+			updateUICard(previouslySelected);
+		}
+		document.getElementById('untuck-icon').style.display = selectedCard.parent ? 'inline' : 'none';
+		document.getElementById('tuck-icon').style.display = selectedCard.parent ? 'none' : 'inline';
+		document.getElementById('controls').style.left = 0;
+	}
+
+	function rotateSelected(direction) {
+		let modifier = ['conflict', 'engine', 'backstory_conflict', 'backstory_engine'].includes(selectedCard.type) ? 2 : 1;
+		selectedCard.orientation = (selectedCard.orientation + direction * modifier) % 4;
+		if(selectedCard.orientation < 0) {
+			selectedCard.orientation += 4;
+		}
+		updateUICard(selectedCard);
+	}
+	
+	function flipSelected() {
+		selectedCard.faceDown = !selectedCard.faceDown;
+		updateUICard(selectedCard);
+	}
+
+	function toggleTuck() {
+		tucking = !tucking;
+		if(tucking) {
+			for(let card of inPlay) {
+				if(card == selectedCard) {
+					continue;
+				}
+				let cardElements = getElementsForCard(card);
+				for(let cardEl of cardElements) {
+					let backstory = card.deck == 'backstory';
+					for(let i=0; i<4; i++) {
+						let trigger = inflate(`
+							<div class="tuck-trigger" style="
+								position:absolute; height:100%; width:100%; top:50%; left:50%;
+								background-color:white; opacity:0; cursor:pointer;
+								transform-origin:top left; transform:rotate(${(backstory ? 0 : 45) + i * 90}deg);
+							"></div>
+						`);
+						cardEl.append(trigger);
+						trigger.addEventListener('mousedown', () => {
+							tuck(selectedCard, card, i);
+							toggleTuck();
+						});
+					}
+				}
+			}
+		} else {
+			let triggers = Array.from(document.getElementsByClassName('tuck-trigger'));
+			for(let trigger of triggers) {
+				trigger.parentNode.removeChild(trigger);
+			}
+		}
+		document.getElementById('tuck-icon').style.color = tucking ? 'orange' : 'white';
+	}
+
+	function tuck(card, parent, side) {
+		if(card.parent) {
+			parent.tucked = parent.tucked.filter(t => t.card != card);
+		}
+		parent.tucked.push({ card:card, side:side });
+		card.parent = parent;
+		let toRemove = document.querySelectorAll(`.${getCardId(card)}.top-level`);
+		for(let c of toRemove) {
+			let el = c.parentNode;
+			el.parentNode.removeChild(el);
+		}
+		updateUICard(parent);
+	}
+
+	function untuck() {
+		selectedCard.parent.tucked = selectedCard.parent.tucked.filter(t => t.card != selectedCard);
+		let toUpdate = selectedCard.parent;
+		selectedCard.parent = null;
+		let el = getElementsForCard(selectedCard)[0];
+		let rect = el.getBoundingClientRect();
+		updateUICard(toUpdate);
+		addCardToPlayArea(selectedCard, rect.left, rect.top);
+		document.getElementById('untuck-icon').style.display = 'none';
+		document.getElementById('tuck-icon').style.display = 'inline';
+	}
+
+	function copySelected() {
+		let el = getElementsForCard(selectedCard).pop();
+		let rect = el.getBoundingClientRect();
+		addCardToPlayArea(selectedCard, rect.left + 16, rect.top + 16);
+	}
+
+	function remove() {
+		let elements = getElementsForCard(selectedCard);
+		let el = elements.pop().parentNode;
+		el.parentNode.removeChild(el);
+		if(!elements.length) {
+			removeCardFromPlayArea(selectedCard);
+			deselect();
+		}
+	}
+
+	function deselect() {
+		let previouslySelected = selectedCard;
+		selectedCard = null;
+		if(previouslySelected) {
+			updateUICard(previouslySelected);
+		}
+		document.getElementById('controls').style.left = '-5em';
+	}
+
+	function save() {
+		let displayedCards = document.getElementsByClassName('top-level');
+		let cardData = [];
+		let getTuckedFunc = tuckedCard => ({
+			card: getCardId(tuckedCard.card),
+			faceDown: tuckedCard.card.faceDown,
+			orientation: tuckedCard.card.orientation,
+			side: tuckedCard.side,
+			tucked: tuckedCard.card.tucked.map(getTuckedFunc),
+		});
+		for(let displayedCard of displayedCards) {
+			let cardId = Array.from(displayedCard.classList).filter(c => c != 'top-level').pop();
+			let card = inPlay.find(c => getCardId(c) == cardId);
+			if(!card) {
+				continue;
+			}
+			let coords = ['left', 'top'].map(d => parseFloat(displayedCard.parentNode.style[d].split('px')[0]));
+			cardData.push({
+				card: cardId,
+				faceDown: card.faceDown,
+				orientation: card.orientation,
+				x: coords[0], y: coords[1],
+				tucked: card.tucked.map(getTuckedFunc),
+			});
+		}
+		let saveData = {
+			selectedDecks: decks.map(d => d.selected ? 1 : 0),
+			cardsInPlay: cardData,
+		};
+		localStorage.setItem('saved', JSON.stringify(saveData));
+	}
+
+	function load() {
+		let saved = localStorage.getItem('saved');
+		if(saved) {
+			let saveData = JSON.parse(saved);
+			for(let i in decks) {
+				decks[i].selected = saveData.selectedDecks[i] == 1;
+			}
+			syncSelectedDecks();
+			for(let savedCardLocation of saveData.cardsInPlay) {
+				let idsToProcess = [savedCardLocation.card];
+				let parents = [ savedCardLocation ];
+				while(idsToProcess.length) {
+					let cardId = idsToProcess.shift();
+					let cardInfo = cardId.split('_');
+					let type = cardInfo[1];
+					let card = drawPiles[type].find(c => getCardId(c) == cardId);
+					if(card) {
+						drawPiles[type] = drawPiles[type].filter(c => getCardId(c) != cardId);
+					} else {
+						let deck = getDeckById(cardInfo[0]);
+						card = deck.cards[type].find(c => getCardId(c) == cardId);
+						deck.cards[type] = deck.cards[type].filter(c => getCardId(c) != cardId);
+					}
+					inPlay.push(card);
+					let item;
+					if(cardId == savedCardLocation.card) {
+						card.orientation = savedCardLocation.orientation;
+						card.faceDown = savedCardLocation.faceDown;
+						addCardToPlayArea(card, savedCardLocation.x, savedCardLocation.y);
+						item = savedCardLocation;
+					} else {
+						let tuckedItem = null;
+						let parent = null;
+						for(var p of parents) {
+							tuckedItem = p.tucked.find(t => t.card == cardId);
+							if(tuckedItem) {
+								parent = inPlay.find(l => getCardId(l) == p.card);
+								break;
+							}
+						}
+						card.orientation = tuckedItem.orientation ?? 0;
+						card.faceDown = tuckedItem.faceDown ?? false;
+						tuck(card, parent, tuckedItem.side);
+						if(tuckedItem.tucked.length) {
+							parents.push(tuckedItem);
+						}
+						item = tuckedItem;
+					}
+					idsToProcess = [...idsToProcess, ...(item.tucked.map(t => t.card))];
+				}
+			}
+			updateDrawPilesUI();
+		} else {
+			syncSelectedDecks();
+		}
+	}
+
+	let selector = document.getElementById('deck-selector');
+	const icons = {
+		'demo': 'fa-comment',
+		'story-engine': 'fa-comment',
+		fantasy: 'fa-dragon',
+		horror: 'fa-skull',
+		'sci-fi': 'fa-rocket',
+		backstory: 'fa-angle-double-left',
+		mystery: 'fa-search',
+		items: 'fa-box-open',
+		'eldritch-horror': 'fa-book-dead',
+		steampunk: 'fa-cog',
+		cyberpunk: 'fa-microchip',
+		'post-apocalyptic': 'fa-truck-monster',
+		mythology: 'fa-hourglass-half',
+		dystopian: 'fa-fist-raised',
+		'gothic-horror': 'fa-crow',
+		superhero: 'fa-mask',
+		western: 'fa-hat-cowboy',
+		'fairy-tales': 'fa-frog',
+		pulp: 'fa-book',
+		military: 'fa-plane',
+	};
+	decks.forEach(deck => {
+		deck.selected = deck == decks[0];
+		deck.cards = {};
+		for(let type of deck.types) {
+			let set = [];
+			let effectiveCardType = type.cardType;
+			if(deck.id == 'backstory' || deck.id == 'items') {
+				effectiveCardType = `${deck.id}_${effectiveCardType}`;
+			}
+			deck.cards[effectiveCardType] = set;
+			for(let c=1; c<=type.count; c++) {
+				set.push({
+					deck: deck.id,
+					type: effectiveCardType,
+					number: c,
+					orientation: 0,
+					faceDown: true,
+					tucked: [],
+				});
+			}
+		}
+		let item = inflate(`
+			<div id="${deck.id}-toggle" class="deck-toggle" style="padding:.75em 1.5em; cursor:pointer; display:flex; align-items:center;">
+				<i class="fas ${icons[deck.id]}" style="width:24px;"></i>&nbsp;
+				<div style="margin:0 .24em;">${deck.name}</div>
+				<i class="fas fa-check" style="margin-left:auto; display:none;"></i>
+			</div>
+		`);
+		item.addEventListener('click', () => {
+			deck.selected = !deck.selected;
+			updateDeckSelector();
+			syncSelectedDecks();
+		});
+		selector.children[1].appendChild(item);
+	});
+	if(DEMO_ONLY) {
+		selector.appendChild(inflate(`
+			<div style="padding:1.5em;">The publicly available version of this software only includes cards from the demo set.</div>
+		`));
+	}
+
+	let elementToDrag = null;
+	let dragOffsetX = 0;
+	let dragOffsetY = 0;
+	let cardElements = [];
+	let rightBound = document.getElementById('right-bound');
+	let bottomBound = document.getElementById('bottom-bound');
+	window.addEventListener('mouseup', () => {
+		if(elementToDrag) {
+			elementToDrag = null;
+		}
+	});
+	window.addEventListener('mousemove', event => {
+		if(elementToDrag) {
+			let mat = document.getElementById('mat');
+			let left = event.clientX-dragOffsetX+mat.scrollLeft;
+			let top = event.clientY-dragOffsetY+mat.scrollTop;
+			elementToDrag.style.left = left+'px';
+			elementToDrag.style.top = top+'px';
+			let rect = elementToDrag.getBoundingClientRect();
+			let maxX = true;
+			let maxY = true;
+			for(let el of cardElements) {
+				let r = el.getBoundingClientRect();
+				if(r.x > rect.x) {
+					maxX = false;
+				}
+				if(r.y > rect.y) {
+					maxY = false;
+				}
+			}
+			if(maxX) {
+				rightBound.style.left = left+window.innerWidth+'px';
+			}
+			if(maxY) {
+				bottomBound.style.top = top+window.innerHeight+'px';
+			}
+		}
+	});
+	window.setInterval(save, 10000);
+
+	let deckSelectorHidden = true;
+	let selectedCard = null;
+	let tucking = false;
+	let drawPiles = {
+		agent:[],
+		engine:[],
+		anchor:[],
+		conflict:[],
+		aspect:[],
+		backstory_engine:[],
+		backstory_conflict:[],
+		items_anchor:[],
+		items_aspect:[],
+	};
+	let inPlay = [];
+	load();
+	updateDeckSelector();
+</script>
+</body>
+</html>
