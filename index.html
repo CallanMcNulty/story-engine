@@ -435,20 +435,33 @@
 				decks[i].selected = saveData.selectedDecks[i] == 1;
 			}
 			syncSelectedDecks();
+			let maxLeft = 0;
+			let maxTop = 0;
 			for(let savedCardLocation of saveData.cardsInPlay) {
 				let idsToProcess = [savedCardLocation.card];
 				let parents = [ savedCardLocation ];
 				while(idsToProcess.length) {
 					let cardId = idsToProcess.shift();
 					let cardInfo = cardId.split('_');
+					let deckId = cardInfo[0];
 					let type = cardInfo[1];
+					if(deckId == 'backstory' || deckId == 'items') {
+						type = `${deckId}_${type}`;
+					}
+					// try draw pile
 					let card = drawPiles[type].find(c => getCardId(c) == cardId);
 					if(card) {
 						drawPiles[type] = drawPiles[type].filter(c => getCardId(c) != cardId);
 					} else {
-						let deck = getDeckById(cardInfo[0]);
+						// try deck
+						let deck = getDeckById(deckId);
 						card = deck.cards[type].find(c => getCardId(c) == cardId);
-						deck.cards[type] = deck.cards[type].filter(c => getCardId(c) != cardId);
+						if(card) {
+							deck.cards[type] = deck.cards[type].filter(c => getCardId(c) != cardId);
+						} else {
+							// try play area
+							card = inPlay.find(c => getCardId(c) == cardId);
+						}
 					}
 					inPlay.push(card);
 					let item;
@@ -456,6 +469,12 @@
 						card.orientation = savedCardLocation.orientation;
 						card.faceDown = savedCardLocation.faceDown;
 						addCardToPlayArea(card, savedCardLocation.x, savedCardLocation.y);
+						if(savedCardLocation.x > maxLeft) {
+							maxLeft = savedCardLocation.x;
+						}
+						if(savedCardLocation.y > maxTop) {
+							maxTop = savedCardLocation.y;
+						}
 						item = savedCardLocation;
 					} else {
 						let tuckedItem = null;
@@ -478,6 +497,8 @@
 					idsToProcess = [...idsToProcess, ...(item.tucked.map(t => t.card))];
 				}
 			}
+			rightBound.style.left = maxLeft+window.innerWidth+'px';
+			bottomBound.style.top = maxTop+window.innerHeight+'px';
 			updateDrawPilesUI();
 		} else {
 			syncSelectedDecks();
@@ -586,7 +607,6 @@
 			}
 		}
 	});
-	window.setInterval(save, 10000);
 
 	let deckSelectorHidden = true;
 	let selectedCard = null;
@@ -605,6 +625,7 @@
 	let inPlay = [];
 	load();
 	updateDeckSelector();
+	window.setInterval(save, 10000);
 </script>
 </body>
 </html>
